@@ -1,10 +1,9 @@
-/** @type {import('next').NextConfig} */
+﻿/** @type {import('next').NextConfig} */
 const nextConfig = {
   // App Router is now stable in Next.js 14, no need for experimental flag
 }
 
-// 仅在生产环境禁用缓存，开发环境不需要
-if (process.env.NODE_ENV === 'production') {
+// 浠呭湪鐢熶骇鐜绂佺敤缂撳瓨锛屽紑鍙戠幆澧冧笉闇€瑕?if (process.env.NODE_ENV === 'production') {
   nextConfig.headers = async () => {
     return [
       {
@@ -28,8 +27,7 @@ if (process.env.NODE_ENV === 'production') {
   }
   
   nextConfig.generateBuildId = async () => {
-    // 使用时间戳作为build ID，确保每次构建都是唯一的
-    return `build-${Date.now()}`
+    // 浣跨敤鏃堕棿鎴充綔涓篵uild ID锛岀‘淇濇瘡娆℃瀯寤洪兘鏄敮涓€鐨?    return `build-${Date.now()}`
   }
 }
 
