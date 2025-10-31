@@ -95,15 +95,6 @@ export default function Gallery() {
     controlsContainerRef.current = controlsContainer as HTMLDivElement | null;
 
     const config = configRef.current;
-    // 与 PC 保持一致的网格配置，避免真机与模拟器差异
-    // 如需放大/缩小请用底部控制按钮，不在这里改变行列与尺寸
-    const ww = window.innerWidth;
-    if (ww < 480) {
-      // 仅轻微放大，保留相同行列，确保视觉一致
-      config.currentZoom = 0.8;
-    } else if (ww < 768) {
-      config.currentZoom = 0.7;
-    }
     const gridState = gridStateRef.current;
 
     const gridItems = Array.from(gridContainer?.querySelectorAll<HTMLElement>('.grid-item') || []);
@@ -113,6 +104,28 @@ export default function Gallery() {
       if (zoomLevel >= 0.6) return 32;
       return 64;
     };
+
+    // 响应式配置：PC端12列，手机端3列
+    const ww = window.innerWidth;
+    const isMobile = ww < 768;
+    
+    if (isMobile) {
+      // 手机端配置：3列
+      config.cols = 3;
+      config.rows = Math.ceil(portfolioItems.length / 3); // 根据作品数量计算行数
+      config.itemSize = 280; // 手机端稍小的尺寸
+      config.currentZoom = 0.9;
+      config.baseGap = 20;
+      config.currentGap = 20;
+    } else {
+      // PC端配置：12列
+      config.cols = 12;
+      config.rows = 8;
+      config.itemSize = 320;
+      config.currentZoom = 0.6;
+      config.baseGap = 16;
+      config.currentGap = calculateGapForZoom(config.currentZoom);
+    }
 
     const calculateGridDimensions = (gap = config.currentGap) => {
       const totalWidth = config.cols * (config.itemSize + gap) - gap;
@@ -148,36 +161,44 @@ export default function Gallery() {
       }
     };
 
-    // 参考原版 IntersectionObserver 实现可见性渐变（移动端禁用以提升性能）
+    // IntersectionObserver 实现可见性渐变（手机端已恢复特效以提升帧率体验）
     const setupVisibilityObserver = () => {
-      // 移动端禁用可见性动画以提升性能
-      const isMobile = window.innerWidth < 768;
-      if (isMobile) {
-        return null;
-      }
+      // 使用 requestAnimationFrame 优化性能，避免卡顿
+      let rafId: number | null = null;
+      const pendingEntries: IntersectionObserverEntry[] = [];
+      
+      const processEntries = () => {
+        pendingEntries.forEach((entry) => {
+          const overlay = entry.target.querySelector('.visibility-overlay') as HTMLDivElement | null;
+          if (!overlay) return;
+
+          if (entry.isIntersecting) {
+            // 进入视口：淡出黑色遮罩
+            gsap.to(overlay, {
+              opacity: 0,
+              duration: 1.8, // 手机端稍快一些
+              ease: 'power2.out'
+            });
+          } else {
+            // 离开视口：淡入黑色遮罩
+            gsap.to(overlay, {
+              opacity: 1,
+              duration: 0.5,
+              ease: 'power2.out'
+            });
+          }
+        });
+        pendingEntries.length = 0;
+        rafId = null;
+      };
       
       const observer = new IntersectionObserver(
         (entries) => {
-          entries.forEach((entry) => {
-            const overlay = entry.target.querySelector('.visibility-overlay') as HTMLDivElement | null;
-            if (!overlay) return;
-
-            if (entry.isIntersecting) {
-              // 进入视口：淡出黑色遮罩
-              gsap.to(overlay, {
-                opacity: 0,
-                duration: 2.5,
-                ease: 'power2.out'
-              });
-            } else {
-              // 离开视口：淡入黑色遮罩
-              gsap.to(overlay, {
-                opacity: 1,
-                duration: 0.6,
-                ease: 'power2.out'
-              });
-            }
-          });
+          // 批量处理，使用 requestAnimationFrame 避免频繁更新
+          pendingEntries.push(...entries);
+          if (!rafId) {
+            rafId = requestAnimationFrame(processEntries);
+          }
         },
         {
           root: null,
@@ -271,7 +292,9 @@ export default function Gallery() {
           const vx = dx / dt;
           const vy = dy / dt;
           // momentum projection factor (ms)
-          const projection = 800; // 更长的动量投射，配合更柔和回弹
+          // 手机端降低拖动速度：减少projection值，增加duration
+          const isMobileDevice = window.innerWidth < 768;
+          const projection = isMobileDevice ? 400 : 800; // 手机端减半，PC端保持原值
           let targetX = draggableRef.current.x + vx * projection;
           let targetY = draggableRef.current.y + vy * projection;
           const { hard, soft } = calculateBounds();
@@ -282,7 +305,7 @@ export default function Gallery() {
           inertiaTweenRef.current = gsap.to(canvasWrapper, {
             x: targetX,
             y: targetY,
-            duration: 1.0,
+            duration: isMobileDevice ? 1.5 : 1.0, // 手机端更慢
             ease: 'power2.out',
             onUpdate: () => {
               // keep Draggable's values in sync while tweening
@@ -670,8 +693,12 @@ export default function Gallery() {
     }
     initDraggable();
     
-    // 移动端双指缩放功能（仅针对网格，非放大状态）
+    // 移动端双指缩放功能（优化：降低灵敏度，添加防抖，减少卡顿）
     let gridPinchState: { startDist: number; startZoom: number } | null = null;
+    let pinchUpdateRaf: number | null = null;
+    let lastPinchTime = 0;
+    const PINCH_THROTTLE = 16; // 约60fps，降低灵敏度
+    
     const setupGridPinch = () => {
       if (!viewport) return;
       
@@ -686,31 +713,67 @@ export default function Gallery() {
         if (e.touches.length === 2 && !zoomStateRef.current.isActive) {
           const d = getDist(e.touches[0], e.touches[1]);
           gridPinchState = { startDist: d, startZoom: config.currentZoom };
+          lastPinchTime = performance.now();
+          
+          // 取消之前的更新
+          if (pinchUpdateRaf) {
+            cancelAnimationFrame(pinchUpdateRaf);
+            pinchUpdateRaf = null;
+          }
+          
           e.preventDefault();
         }
       };
       
+      const updateZoom = () => {
+        if (!gridPinchState || !canvasWrapper) return;
+        
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        const scaledWidth = gridState.width * config.currentZoom;
+        const scaledHeight = gridState.height * config.currentZoom;
+        const centerX = (vw - scaledWidth) / 2;
+        const centerY = (vh - scaledHeight) / 2;
+        
+        // 使用 gsap.set 但添加 will-change 优化
+        gsap.set(canvasWrapper, {
+          scale: config.currentZoom,
+          x: centerX,
+          y: centerY,
+          force3D: true // 强制硬件加速
+        });
+        
+        pinchUpdateRaf = null;
+      };
+      
       const onTouchMove = (e: TouchEvent) => {
         if (gridPinchState && e.touches.length === 2 && !zoomStateRef.current.isActive) {
+          const now = performance.now();
+          
+          // 节流：降低灵敏度，减少更新频率
+          if (now - lastPinchTime < PINCH_THROTTLE) {
+            e.preventDefault();
+            return;
+          }
+          
           const d = getDist(e.touches[0], e.touches[1]);
           const ratio = d / Math.max(1, gridPinchState.startDist);
-          const targetZoom = Math.min(2.0, Math.max(0.3, gridPinchState.startZoom * ratio));
           
-          // 实时应用缩放
-          if (canvasWrapper) {
-            const vw = window.innerWidth;
-            const vh = window.innerHeight;
-            const scaledWidth = gridState.width * targetZoom;
-            const scaledHeight = gridState.height * targetZoom;
-            const centerX = (vw - scaledWidth) / 2;
-            const centerY = (vh - scaledHeight) / 2;
-            
-            gsap.set(canvasWrapper, {
-              scale: targetZoom,
-              x: centerX,
-              y: centerY
-            });
+          // 降低灵敏度：添加阻尼系数，缩放变化更平滑
+          const sensitivity = 0.5; // 降低灵敏度（0.5倍）
+          const adjustedRatio = 1 + (ratio - 1) * sensitivity;
+          const targetZoom = Math.min(2.0, Math.max(0.3, gridPinchState.startZoom * adjustedRatio));
+          
+          // 平滑过渡：只有在变化足够大时才更新
+          const zoomDiff = Math.abs(targetZoom - config.currentZoom);
+          if (zoomDiff > 0.02) { // 只有变化超过2%才更新
             config.currentZoom = targetZoom;
+            lastPinchTime = now;
+            
+            // 使用 requestAnimationFrame 批量更新，避免卡顿
+            if (!pinchUpdateRaf) {
+              pinchUpdateRaf = requestAnimationFrame(updateZoom);
+            }
           }
           
           e.preventDefault();
@@ -719,11 +782,23 @@ export default function Gallery() {
       
       const onTouchEnd = (_e: TouchEvent) => {
         if (gridPinchState && !zoomStateRef.current.isActive) {
+          // 取消待处理的更新
+          if (pinchUpdateRaf) {
+            cancelAnimationFrame(pinchUpdateRaf);
+            pinchUpdateRaf = null;
+          }
+          
+          // 最终更新一次
+          if (canvasWrapper) {
+            updateZoom();
+          }
+          
           // 更新缩放级别并重新初始化拖拽
           const newGap = calculateGapForZoom(config.currentZoom);
           if (newGap !== config.currentGap) {
             config.currentGap = newGap;
             calculateGridDimensions(config.currentGap);
+            layoutGridItems(); // 重新布局
           }
           initDraggable();
           gridPinchState = null;
@@ -743,14 +818,26 @@ export default function Gallery() {
     const visibilityObserver = setupVisibilityObserver();
 
     const onResize = () => {
-      // 保持与PC一致的网格行列与单元尺寸，仅调整 zoom 以适配小屏
+      // 响应式配置：窗口大小改变时重新计算
       const ww = window.innerWidth;
-      if (ww < 480) {
-        config.currentZoom = 0.8;
-      } else if (ww < 768) {
-        config.currentZoom = 0.7;
+      const isMobileResize = ww < 768;
+      
+      if (isMobileResize) {
+        // 手机端配置：3列
+        config.cols = 3;
+        config.rows = Math.ceil(portfolioItems.length / 3);
+        config.itemSize = 280;
+        config.currentZoom = 0.9;
+        config.baseGap = 20;
+        config.currentGap = 20;
       } else {
+        // PC端配置：12列
+        config.cols = 12;
+        config.rows = 8;
+        config.itemSize = 320;
         config.currentZoom = 0.6;
+        config.baseGap = 16;
+        config.currentGap = calculateGapForZoom(config.currentZoom);
       }
 
       calculateGridDimensions(config.currentGap);

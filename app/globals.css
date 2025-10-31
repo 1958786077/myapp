@@ -241,9 +241,10 @@ html::-webkit-scrollbar {
   position: absolute; 
   inset: 0; 
   pointer-events: none; 
-  opacity: 0; 
-  background: rgba(0,0,0,0);
+  opacity: 1; 
+  background: rgba(0,0,0,1);
   will-change: opacity;
+  transition: opacity 0.3s ease-out;
 }
 
 .gallery-area .split-screen-container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; display: flex; z-index: 11000; opacity: 0; pointer-events: none; background: rgba(0, 0, 0, 0.8); }
